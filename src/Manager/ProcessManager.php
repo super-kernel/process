@@ -5,11 +5,8 @@ declare(strict_types=1);
 namespace SuperKernel\Process\Manager;
 
 use Closure;
-use InvalidArgumentException;
-use LogicException;
 use SuperKernel\Process\Contract\ProcessInterface;
 use SuperKernel\Process\Contract\ProcessManagerInterface;
-use SuperKernel\Process\Definition\ProcessDefinition;
 use SuperKernel\Process\Exception\ProcessException;
 use SuperKernel\Process\Exception\ProcessNotFoundException;
 use Swoole\Constant;
@@ -19,7 +16,6 @@ use Swoole\Process\Pool;
 
 use function count;
 use function getmypid;
-use function in_array;
 use function pcntl_get_last_error;
 use function pcntl_waitpid;
 use function Swoole\Coroutine\run;
@@ -27,9 +23,7 @@ use function Swoole\Coroutine\run;
 use const PCNTL_ECHILD;
 use const PCNTL_EINTR;
 use const PHP_SAPI;
-use const SWOOLE_IPC_MSGQUEUE;
 use const SWOOLE_IPC_NONE;
-use const SWOOLE_IPC_UNIXSOCK;
 
 /** Maps registered tasks to one native Pool; Pool owns worker replacement and shutdown. */
 final class ProcessManager implements ProcessManagerInterface
@@ -38,8 +32,8 @@ final class ProcessManager implements ProcessManagerInterface
     private array $processes = [];
     private ?Pool $pool = null;
     private int $owner;
-    private int $ipcType = SWOOLE_IPC_NONE;
-    private int $msgQueueKey = 0;
+    private int $ipcType;
+    private int $msgQueueKey;
     private bool $started = false;
     private bool $running = false;
     private bool $stopping = false;
@@ -47,7 +41,10 @@ final class ProcessManager implements ProcessManagerInterface
     public function __construct(int $ipcType = SWOOLE_IPC_NONE, int $msgQueueKey = 0)
     {
         $this->owner = getmypid();
-        $this->setIPCType($ipcType)->setMsgQueueKey($msgQueueKey);
+        StartupGuard::assertMutable($this->owner, $this->started);
+        IpcTypeValidator::assertSupported($ipcType);
+        $this->ipcType = $ipcType;
+        $this->msgQueueKey = $msgQueueKey;
     }
 
     public function add(
@@ -56,7 +53,9 @@ final class ProcessManager implements ProcessManagerInterface
         ?string                   $name = null,
     ): self
     {
-        return $this->addBatch(1, $process, $enableCoroutine, $name);
+        StartupGuard::assertMutable($this->owner, $this->started);
+        $this->processes += BatchRegistration::entries($this->processes, 1, $process, $enableCoroutine, $name);
+        return $this;
     }
 
     public function addBatch(
@@ -66,37 +65,8 @@ final class ProcessManager implements ProcessManagerInterface
         ?string                   $name = null,
     ): self
     {
-        $this->assertMutable();
-        if (0 > $workerNum || 1024 < $workerNum) {
-            throw new InvalidArgumentException('Worker count must be between 0 and 1024.');
-        }
-        if (0 === $workerNum || ($process instanceof ProcessInterface && !$process->enabled)) {
-            return $this;
-        }
-        $offset = count($this->processes);
-        if (1024 < $offset + $workerNum) {
-            throw new LogicException('At most 1024 workers may be registered.');
-        }
-        if ('' === $name) {
-            throw new LogicException('Process names must not be empty.');
-        }
-        $names = [];
-        for ($index = 0; $index < $workerNum; ++$index) {
-            $workerName = null === $name ? (string) ($offset + $index)
-                : $name . (1 === $workerNum ? '' : ':' . $index);
-            if ($this->has($workerName)) {
-                throw new LogicException('Duplicate process name: ' . $workerName . '.');
-            }
-            $names[] = $workerName;
-        }
-        if (!$process instanceof ProcessInterface) {
-            $process = new ProcessDefinition($process(...), $enableCoroutine ?? false);
-        } elseif (null !== $enableCoroutine && $enableCoroutine !== $process->enableCoroutine) {
-            $process = new ProcessDefinition($process->execute(...), $enableCoroutine);
-        }
-        foreach ($names as $workerName) {
-            $this->processes[$workerName] = $process;
-        }
+        StartupGuard::assertMutable($this->owner, $this->started);
+        $this->processes += BatchRegistration::entries($this->processes, $workerNum, $process, $enableCoroutine, $name);
         return $this;
     }
 
@@ -118,17 +88,8 @@ final class ProcessManager implements ProcessManagerInterface
 
     public function setIPCType(int $ipcType): self
     {
-        $this->assertMutable();
-        if (!in_array($ipcType, [
-            SWOOLE_IPC_NONE,
-            SWOOLE_IPC_UNIXSOCK,
-            SWOOLE_IPC_MSGQUEUE,
-        ], true)) {
-            throw new InvalidArgumentException(
-                'Worker IPC must be disabled or use Unix domain sockets or a System V message queue.'
-                . ' Network sockets require listen().',
-            );
-        }
+        StartupGuard::assertMutable($this->owner, $this->started);
+        IpcTypeValidator::assertSupported($ipcType);
         $this->ipcType = $ipcType;
         return $this;
     }
@@ -140,7 +101,7 @@ final class ProcessManager implements ProcessManagerInterface
 
     public function setMsgQueueKey(int $msgQueueKey): self
     {
-        $this->assertMutable();
+        StartupGuard::assertMutable($this->owner, $this->started);
         $this->msgQueueKey = $msgQueueKey;
         return $this;
     }
@@ -152,7 +113,7 @@ final class ProcessManager implements ProcessManagerInterface
 
     public function start(?Closure $beforeStart = null, ?Closure $afterFork = null): void
     {
-        $this->assertMutable();
+        StartupGuard::assertMutable($this->owner, $this->started);
         $this->started = true;
         if ([] === $this->processes || $this->stopping) {
             return;
@@ -193,7 +154,26 @@ final class ProcessManager implements ProcessManagerInterface
                 $beforeStart();
                 $this->owner = getmypid();
             }
-            $this->startPool($this->pool);
+            // The parent hook may cancel startup after preparation, including across a daemon boundary.
+            /** @noinspection PhpConditionAlreadyCheckedInspection The hook may call stop() and set $this->stopping. */
+            if ($this->stopping) {
+                return;
+            }
+            $this->running = true;
+            if (false === $this->pool->start()) {
+                throw new ProcessException('Unable to start the process Pool.');
+            }
+            // Pool owns this process's child wait loop. Swoole 6.2.3 may leave final workers awaiting reaping.
+            while (true) {
+                $pid = pcntl_waitpid(-1, $status);
+                if (0 < $pid || (-1 === $pid && PCNTL_EINTR === pcntl_get_last_error())) {
+                    continue;
+                }
+                if (-1 === $pid && PCNTL_ECHILD === pcntl_get_last_error()) {
+                    return;
+                }
+                throw new ProcessException('Unable to reap the remaining Pool workers.');
+            }
         } finally {
             $this->running = false;
             $this->pool = null;
@@ -211,48 +191,6 @@ final class ProcessManager implements ProcessManagerInterface
             } catch (SwooleException $error) {
                 throw new ProcessException('Unable to request Pool shutdown.', 0, $error);
             }
-        }
-    }
-
-    /**
-     * @throws ProcessException When native startup fails or worker cleanup is incomplete
-     * @throws SwooleException  When the native Pool rejects its event configuration
-     */
-    private function startPool(Pool $pool): void
-    {
-        // The parent hook may cancel startup after preparation, including across a daemon boundary.
-        if ($this->stopping) {
-            return;
-        }
-        $this->running = true;
-        if (false === $pool->start()) {
-            throw new ProcessException('Unable to start the process Pool.');
-        }
-        // Pool owns this process's child wait loop. Swoole 6.2.3 may leave final workers awaiting reaping.
-        $this->reapWorkers();
-    }
-
-    private function reapWorkers(): void
-    {
-        while (true) {
-            $pid = pcntl_waitpid(-1, $status);
-            if (0 < $pid || (-1 === $pid && PCNTL_EINTR === pcntl_get_last_error())) {
-                continue;
-            }
-            if (-1 === $pid && PCNTL_ECHILD === pcntl_get_last_error()) {
-                return;
-            }
-            throw new ProcessException('Unable to reap the remaining Pool workers.');
-        }
-    }
-
-    private function assertMutable(): void
-    {
-        if ($this->owner !== getmypid()) {
-            throw new LogicException('Only the creating process may configure or start this manager.');
-        }
-        if ($this->started) {
-            throw new LogicException('The manager may only start once; registrations and settings are now closed.');
         }
     }
 }

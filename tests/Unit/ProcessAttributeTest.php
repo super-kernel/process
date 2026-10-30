@@ -10,6 +10,7 @@ use ReflectionClass;
 use ReflectionException;
 use SuperKernel\Annotator\Cache\AnnotationCache;
 use SuperKernel\Annotator\Cache\SerializedPackageReferences;
+use SuperKernel\Annotator\Constants\CacheLayout;
 use SuperKernel\Annotator\Exception\AnnotationCacheException;
 use SuperKernel\Annotator\Model\AttributeMetadata;
 use SuperKernel\Annotator\Model\PackageAnnotations;
@@ -91,7 +92,7 @@ final class ProcessAttributeTest extends TestCase
             mkdir($directory . '/.cache/annotations/acme', recursive: true);
             file_put_contents($directory . '/.cache/annotations/acme/process.ser', $contents);
             file_put_contents(
-                $directory . '/.cache/' . AnnotationCache::INDEX_PATH,
+                $directory . '/.cache/' . CacheLayout::IndexPath->value,
                 serialize(new SerializedPackageReferences([
                     'acme/process' => 'before-null-coroutine',
                 ])),

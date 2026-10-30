@@ -11,17 +11,17 @@ The contract covers the actual responsibilities of Swoole's PHP
 registration, startup, Pool IPC type and message-queue key. Framework consumers depend on the interface;
 the implementation uses native Pool directly.
 
-| Method | Behavior |
-| --- | --- |
-| `add($process, $enableCoroutine = null, $name = null)` | Register one task or callable and return this manager |
-| `addBatch($workerNum, $process, $enableCoroutine = null, $name = null)` | Add worker registrations to the same Pool atomically |
-| `all()` | Return registered `ProcessInterface` tasks keyed by name, in worker-ID order |
-| `has($name)` | Check whether a name is registered; this says nothing about worker liveness |
-| `get($name)` | Return the same registered task on repeated lookup, including after worker replacement |
-| `setIPCType()` / `getIPCType()` | Set/read the IPC mode shared by every worker |
-| `setMsgQueueKey()` / `getMsgQueueKey()` | Set/read the Pool's System V message-queue key |
-| `start()` | Start the Pool and wait for shutdown and remaining worker reaping |
-| `stop()` | Request shutdown of the entire Pool, from its parent or a worker |
+| Method                                                                  | Behavior                                                                               |
+|-------------------------------------------------------------------------|----------------------------------------------------------------------------------------|
+| `add($process, $enableCoroutine = null, $name = null)`                  | Register one task or callable and return this manager                                  |
+| `addBatch($workerNum, $process, $enableCoroutine = null, $name = null)` | Add worker registrations to the same Pool atomically                                   |
+| `all()`                                                                 | Return registered `ProcessInterface` tasks keyed by name, in worker-ID order           |
+| `has($name)`                                                            | Check whether a name is registered; this says nothing about worker liveness            |
+| `get($name)`                                                            | Return the same registered task on repeated lookup, including after worker replacement |
+| `setIPCType()` / `getIPCType()`                                         | Set/read the IPC mode shared by every worker                                           |
+| `setMsgQueueKey()` / `getMsgQueueKey()`                                 | Set/read the Pool's System V message-queue key                                         |
+| `start()`                                                               | Start the Pool and wait for shutdown and remaining worker reaping                      |
+| `stop()`                                                                | Request shutdown of the entire Pool, from its parent or a worker                       |
 
 `add`, `addBatch` and setters support chaining. An unnamed entry uses its zero-based registration index as its
 name. A named batch of multiple workers expands to `name:0`, `name:1`, etc.; a one-worker batch retains `name`.
@@ -81,11 +81,11 @@ The Attribute's third constructor parameter and promoted public readonly propert
 `?bool $enableCoroutine = null` for inheritance or an explicit boolean override.
 `ProcessInterface::$enableCoroutine` remains bool. Explicit overrides do not produce conflict diagnostics.
 
-| Attribute argument | Task property false | Task property true |
-| --- | --- | --- |
-| Omitted or `null` | Direct execution | Coroutine execution |
-| `false` | Direct execution | Direct execution |
-| `true` | Coroutine execution | Coroutine execution |
+| Attribute argument | Task property false | Task property true  |
+|--------------------|---------------------|---------------------|
+| Omitted or `null`  | Direct execution    | Coroutine execution |
+| `false`            | Direct execution    | Direct execution    |
+| `true`             | Coroutine execution | Coroutine execution |
 
 The recommended declaration expresses the preference once:
 
