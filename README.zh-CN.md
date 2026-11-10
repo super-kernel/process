@@ -83,7 +83,7 @@ final class Job implements ProcessInterface
 
 禁用的任务和工作进程数为零的声明保持不活动。自行注册声明的自定义集成，用 `$attribute->enableCoroutine ?? $task->enableCoroutine` 计算生效值，并把它传给管理器的注册 API。
 
-注解缓存保存的是实例化后的注解值。在仅恢复或 Phar 部署之前，以及修改声明之后，请通过扫描源码重新生成缓存。
+`skernel build` 生成的记录保存的是实例化后的注解值。修改声明之后、打包或部署应用之前，请再次运行 `skernel build`。
 
 ## 已禁用的应用示例
 

@@ -14,10 +14,8 @@ use SuperKernel\Annotator\Constants\CacheLayout;
 use SuperKernel\Annotator\Exception\AnnotationCacheException;
 use SuperKernel\Annotator\Model\AttributeMetadata;
 use SuperKernel\Annotator\Model\PackageAnnotations;
-use SuperKernel\Annotator\Scan\AnnotationScanner;
 use SuperKernel\Contract\PackageManagerInterface;
 use SuperKernel\Contract\PackageMetadataInterface;
-use SuperKernel\Contract\ReflectorInterface;
 use SuperKernel\Contract\VendorDirInterface;
 use SuperKernel\Process\Attribute\Process;
 use SuperKernel\Process\Contract\ProcessInterface;
@@ -60,7 +58,7 @@ final class ProcessAttributeTest extends TestCase
             ->getProperty('enableCoroutine')->getType());
     }
 
-    /** @throws Throwable When cache restoration, scanning or registration fails */
+    /** @throws Throwable When cache restoration, publication or registration fails */
     public function testSchemaThreeRequiresRebuildingAndCurrentSnapshotsPreserveExplicitFalse(): void
     {
         // Generated from ConfiguredProcess's omitted argument at commit 23323b1 using the actual scanner.
@@ -74,14 +72,6 @@ final class ProcessAttributeTest extends TestCase
         $packages->method('all')->willReturn([
             $package,
         ]);
-        $reflection = new ReflectionClass(ConfiguredProcess::class);
-        $packages->method('classes')->willReturn([
-            ConfiguredProcess::class => $reflection->getFileName(),
-        ]);
-        $reflector = $this->createStub(ReflectorInterface::class);
-        $reflector->method('reflectClass')->willReturnCallback(
-            static fn(string $class): ReflectionClass => new ReflectionClass($class),
-        );
         $directory = tempnam(sys_get_temp_dir(), 'sk-process-cache-');
         unlink($directory);
         mkdir($directory);
@@ -111,7 +101,7 @@ final class ProcessAttributeTest extends TestCase
                 );
             }
 
-            // Current-schema snapshots still retain explicit false; only rescanning omitted arguments yields null.
+            // Current-schema snapshots still retain explicit false; only rebuilding omitted arguments yields null.
             $cache->write($packages, [
                 new PackageAnnotations('acme/process', 'before-null-coroutine', [
                     ConfiguredProcess::class => [
@@ -127,12 +117,18 @@ final class ProcessAttributeTest extends TestCase
             self::assertNotSame($task, $oldEntry);
             self::assertTrue($task->enableCoroutine);
 
-            $scanner = new AnnotationScanner($packages, $reflector);
-            $cache->write($packages, $scanner->scan());
-            $rescanned = $cache->read($packages);
-            $fresh = $rescanned->getClassesWithAttribute(Process::class)[ConfiguredProcess::class][0]->attribute();
+            $declared = new ReflectionClass(ConfiguredProcess::class)->getAttributes(Process::class)[0];
+            $cache->write($packages, [
+                new PackageAnnotations('acme/process', 'before-null-coroutine', [
+                    ConfiguredProcess::class => [
+                        new AttributeMetadata($declared->newInstance()),
+                    ],
+                ], [], []),
+            ]);
+            $rebuilt = $cache->read($packages);
+            $fresh = $rebuilt->getClassesWithAttribute(Process::class)[ConfiguredProcess::class][0]->attribute();
             self::assertNull($fresh->enableCoroutine);
-            $newEntry = new ProcessManagerProvider()($rescanned, $container)->get(ConfiguredProcess::class);
+            $newEntry = new ProcessManagerProvider()($rebuilt, $container)->get(ConfiguredProcess::class);
             self::assertSame($task, $newEntry);
             self::assertTrue($newEntry->enableCoroutine);
             self::assertFileDoesNotExist($directory . '/executed');
